@@ -214,6 +214,7 @@ namespace sdbus::internal {
             bool clear();
 
             int fd{-1};
+            int writeFd{-1}; // write end when emulated with a self-pipe (macOS)
         };
 
         struct MatchInfo

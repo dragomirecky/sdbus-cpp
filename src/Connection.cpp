@@ -36,7 +36,12 @@
 #include "Utils.h"
 
 #include <poll.h>
+#ifdef __APPLE__
+#include <fcntl.h>
+#include <unistd.h>
+#else
 #include <sys/eventfd.h>
+#endif
 #include SDBUS_HEADER
 #ifndef SDBUS_basu // sd_event integration is not supported in basu-based sdbus-c++
 #include <systemd/sd-event.h>
@@ -826,30 +831,65 @@ int Connection::sdbus_match_install_callback(sd_bus_message *sdbusMessage, void 
 
 Connection::EventFd::EventFd()
 {
+#ifdef __APPLE__
+    // macOS has no eventfd; emulate with a self-pipe. fd is the read end (the
+    // one added to poll()), writeFd the write end used to wake the loop.
+    int fds[2];
+    auto r = pipe(fds);
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to create event pipe", -errno);
+    fd = fds[0];
+    writeFd = fds[1];
+    for (auto pipeFd : {fd, writeFd})
+    {
+        fcntl(pipeFd, F_SETFD, FD_CLOEXEC);
+        fcntl(pipeFd, F_SETFL, O_NONBLOCK);
+    }
+#else
     fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     SDBUS_THROW_ERROR_IF(fd < 0, "Failed to create event object", -errno);
+#endif
 }
 
 Connection::EventFd::~EventFd()
 {
     assert(fd >= 0);
     close(fd);
+#ifdef __APPLE__
+    if (writeFd >= 0)
+        close(writeFd);
+#endif
 }
 
 void Connection::EventFd::notify()
 {
     assert(fd >= 0);
+#ifdef __APPLE__
+    uint8_t value = 1;
+    auto r = write(writeFd, &value, sizeof(value));
+    // EAGAIN simply means the pipe already holds a pending wake-up byte.
+    SDBUS_THROW_ERROR_IF(r < 0 && errno != EAGAIN, "Failed to notify event descriptor", -errno);
+#else
     auto r = eventfd_write(fd, 1);
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to notify event descriptor", -errno);
+#endif
 }
 
 bool Connection::EventFd::clear()
 {
     assert(fd >= 0);
 
+#ifdef __APPLE__
+    uint8_t buffer[64];
+    ssize_t r;
+    do {
+        r = read(fd, buffer, sizeof(buffer));
+    } while (r > 0);
+    return true;
+#else
     uint64_t value{};
     auto r = eventfd_read(fd, &value);
     return r >= 0;
+#endif
 }
 
 } // namespace sdbus::internal
