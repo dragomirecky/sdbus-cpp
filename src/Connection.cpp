@@ -884,7 +884,10 @@ bool Connection::EventFd::clear()
     do {
         r = read(fd, buffer, sizeof(buffer));
     } while (r > 0);
-    return true;
+    // Fully drained when read() reports it would block; anything else
+    // (a genuine error, or EOF from a closed write end) is a real failure
+    // that the caller's SDBUS_THROW_ERROR_IF(!cleared, ...) should surface.
+    return r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
 #else
     uint64_t value{};
     auto r = eventfd_read(fd, &value);
